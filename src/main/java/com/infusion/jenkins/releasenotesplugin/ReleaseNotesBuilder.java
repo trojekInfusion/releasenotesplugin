@@ -12,6 +12,14 @@ import hudson.util.FormValidation;
 import hudson.util.ListBoxModel;
 
 import java.io.IOException;
+import java.io.PrintStream;
+import java.lang.reflect.Field;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import javax.servlet.ServletException;
 
@@ -21,16 +29,17 @@ import org.kohsuke.stapler.AncestorInPath;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.QueryParameter;
 import org.kohsuke.stapler.StaplerRequest;
+import org.slf4j.LoggerFactory;
+import org.slf4j.impl.JDK14LoggerAdapter;
 
+import com.cloudbees.plugins.credentials.CredentialsMatcher;
+import com.cloudbees.plugins.credentials.CredentialsMatchers;
 import com.cloudbees.plugins.credentials.CredentialsProvider;
 import com.cloudbees.plugins.credentials.common.StandardCredentials;
 import com.cloudbees.plugins.credentials.common.StandardListBoxModel;
 import com.cloudbees.plugins.credentials.common.StandardUsernamePasswordCredentials;
 import com.cloudbees.plugins.credentials.impl.UsernamePasswordCredentialsImpl;
 import com.infusion.relnotesgen.MainInvoker;
-
-import com.cloudbees.plugins.credentials.CredentialsMatcher;
-import com.cloudbees.plugins.credentials.CredentialsMatchers;
 
 /**
  * Sample {@link Builder}.
@@ -53,7 +62,7 @@ public class ReleaseNotesBuilder extends Builder {
 
     public static final CredentialsMatcher CREDENTIALS_MATCHER = CredentialsMatchers.anyOf(new CredentialsMatcher[] {
             CredentialsMatchers.instanceOf(UsernamePasswordCredentialsImpl.class)});
-    
+
     private final String tag1;
     private final String tag2;
     private final String gitDirectory;
@@ -199,14 +208,26 @@ public class ReleaseNotesBuilder extends Builder {
     @Override
     public boolean perform(final AbstractBuild build, final Launcher launcher, final BuildListener listener) {
         // This is where you 'build' the project.
+        final PrintStream jenkinsBuildLog = listener.getLogger();
+        try {
+            redirectLoggingToJenkinsBuildConsole(jenkinsBuildLog);
 
-        if (getDescriptor().getUseGit()) {
-            try {
-                StandardUsernamePasswordCredentials gitUsernamePassword = CredentialsProvider.findCredentialById(gitCredentialsId, UsernamePasswordCredentialsImpl.class, build);
-                StandardUsernamePasswordCredentials jiraUsernamePassword = CredentialsProvider.findCredentialById(jiraCredentialsId, UsernamePasswordCredentialsImpl.class, build);
-                listener.getLogger().println("Founded git credentials " + gitUsernamePassword.getDescription());
-                listener.getLogger().println("Founded jira credentials " + jiraUsernamePassword.getDescription());
-                new MainInvoker()
+            String gitBranch = isNotEmpty(this.gitBranch) ? this.gitBranch : getDescriptor().getGitBranch();
+            String gitCommitterName = isNotEmpty(this.gitCommitterName) ? this.gitCommitterName : getDescriptor().getGitCommitterName();
+            String gitCommitterMail = isNotEmpty(this.gitCommitterMail) ? this.gitCommitterMail : getDescriptor().getGitCommitterMail();
+            String gitCommitMessageValidationOmmiter = isNotEmpty(this.gitCommitMessageValidationOmmiter) ? this.gitCommitMessageValidationOmmiter : getDescriptor().getGitCommitMessageValidationOmmiter();
+            String jiraUrl = isNotEmpty(this.jiraUrl) ? this.jiraUrl : getDescriptor().getJiraUrl();
+            String jiraIssuePattern = isNotEmpty(this.jiraIssuePattern) ? this.jiraIssuePattern : getDescriptor().getJiraIssuePattern();
+            String issueSortType = isNotEmpty(this.issueSortType) ? this.issueSortType : getDescriptor().getIssueSortType();
+            String issueSortPriority = isNotEmpty(this.issueSortPriority) ? this.issueSortPriority : getDescriptor().getIssueSortPriority();
+            String reportTemplate = isNotEmpty(this.reportTemplate) ? this.reportTemplate : getDescriptor().getReportTemplate();
+
+            StandardUsernamePasswordCredentials gitUsernamePassword = CredentialsProvider.findCredentialById(gitCredentialsId, UsernamePasswordCredentialsImpl.class, build);
+            StandardUsernamePasswordCredentials jiraUsernamePassword = CredentialsProvider.findCredentialById(jiraCredentialsId, UsernamePasswordCredentialsImpl.class, build);
+            jenkinsBuildLog.println("Founded git credentials " + gitUsernamePassword.getDescription());
+            jenkinsBuildLog.println("Founded jira credentials " + jiraUsernamePassword.getDescription());
+
+            new MainInvoker()
                     .tagStart(tag1)
                     .tagEnd(tag2)
                     .pushReleaseNotes(pushReleaseNotes)
@@ -231,14 +252,58 @@ public class ReleaseNotesBuilder extends Builder {
                     .reportDirectory(reportDirectory)
                     .reportTemplate(reportTemplate)
                     .invoke();
-            } catch (Exception e) {
-                listener.getLogger().println(e.getMessage());
-            }
-
-        } else {
-            listener.getLogger().println("We're very sorry but for now you can use only git as scm provider.");
+        } catch (Exception e) {
+            e.printStackTrace(jenkinsBuildLog);
+            return false;
         }
         return true;
+    }
+
+    private static boolean isNotEmpty(final String text) {
+        return text != null && text.length() > 0;
+    }
+
+    private void redirectLoggingToJenkinsBuildConsole(final PrintStream jenkinsBuildLog) throws IllegalArgumentException, IllegalAccessException {
+        java.util.logging.Logger logger = findJdkLogger();
+        if(logger == null) {
+            jenkinsBuildLog.println("[WARN] Couldn't find jdk logger, probably jenkins is using new logging system. Logging won't be visible in console.");
+            return;
+        }
+        logger.addHandler(new Handler() {
+
+            DateFormat dateFormat = new SimpleDateFormat("HH:mm:ss.SSS");
+
+            @Override
+            public void publish(final LogRecord logRecord) {
+                StringBuilder message = new StringBuilder()
+                        .append(dateFormat.format(new Date(logRecord.getMillis())))
+                        .append(" ")
+                        .append(logRecord.getLevel())
+                        .append(" ReleaseNotesLogger - ")
+                        .append(logRecord.getMessage());
+                jenkinsBuildLog.println(message.toString());
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        });
+    }
+
+    private java.util.logging.Logger findJdkLogger() throws IllegalArgumentException, IllegalAccessException {
+        org.slf4j.impl.JDK14LoggerAdapter logger = (JDK14LoggerAdapter) LoggerFactory.getLogger(MainInvoker.getLoggerName());
+        for(Field field : logger.getClass().getDeclaredFields()) {
+            field.setAccessible(true);
+            Object object = field.get(logger);
+            if(object instanceof java.util.logging.Logger) {
+                return (Logger) object;
+            }
+        }
+        return null;
     }
 
     // Overridden for better type safety.
@@ -266,7 +331,15 @@ public class ReleaseNotesBuilder extends Builder {
          * <p>
          * If you don't want fields to be persisted, use <tt>transient</tt>.
          */
-        private boolean useGit;
+        private String gitBranch;
+        private String gitCommitterName;
+        private String gitCommitterMail;
+        private String gitCommitMessageValidationOmmiter;
+        private String jiraUrl;
+        private String jiraIssuePattern;
+        private String issueSortType;
+        private String issueSortPriority;
+        private String reportTemplate;
 
         /**
          * In order to load the persisted global configuration, you have to
@@ -295,6 +368,13 @@ public class ReleaseNotesBuilder extends Builder {
             return FormValidation.ok();
         }
 
+        public FormValidation doCheckGitUrl(@QueryParameter final String value)
+                throws IOException, ServletException {
+            if (value.length() == 0)
+                return FormValidation.error("Please set git url");
+            return FormValidation.ok();
+        }
+
         @Override
         public boolean isApplicable(final Class<? extends AbstractProject> aClass) {
             // Indicates that this builder can be used with all kinds of project types
@@ -313,7 +393,15 @@ public class ReleaseNotesBuilder extends Builder {
         public boolean configure(final StaplerRequest req, final JSONObject formData) throws FormException {
             // To persist global configuration information,
             // set that to properties and call save().
-            useGit = formData.getBoolean("useGit");
+            gitBranch = formData.getString("gitBranch");
+            gitCommitterName = formData.getString("gitCommitterName");
+            gitCommitterMail = formData.getString("gitCommitterMail");
+            gitCommitMessageValidationOmmiter = formData.getString("gitCommitMessageValidationOmmiter");
+            jiraUrl = formData.getString("jiraUrl");
+            jiraIssuePattern = formData.getString("jiraIssuePattern");
+            issueSortType = formData.getString("issueSortType");
+            issueSortPriority = formData.getString("issueSortPriority");
+            reportTemplate = formData.getString("reportTemplate");
             // ^Can also use req.bindJSON(this, formData);
             //  (easier when there are many fields; need set* methods for this, like setUseFrench)
             save();
@@ -326,8 +414,40 @@ public class ReleaseNotesBuilder extends Builder {
          * The method name is bit awkward because global.jelly calls this method to determine
          * the initial state of the checkbox by the naming convention.
          */
-        public boolean getUseGit() {
-            return useGit;
+        public String getGitBranch() {
+            return gitBranch;
+        }
+
+        public String getGitCommitterName() {
+            return gitCommitterName;
+        }
+
+        public String getGitCommitterMail() {
+            return gitCommitterMail;
+        }
+
+        public String getGitCommitMessageValidationOmmiter() {
+            return gitCommitMessageValidationOmmiter;
+        }
+
+        public String getJiraUrl() {
+            return jiraUrl;
+        }
+
+        public String getJiraIssuePattern() {
+            return jiraIssuePattern;
+        }
+
+        public String getIssueSortType() {
+            return issueSortType;
+        }
+
+        public String getIssueSortPriority() {
+            return issueSortPriority;
+        }
+
+        public String getReportTemplate() {
+            return reportTemplate;
         }
 
         public ListBoxModel doFillGitCredentialsIdItems(@AncestorInPath final Item project) {

@@ -25,14 +25,8 @@
   <f:entry title="Git URL" field="gitUrl">
     <f:textbox />
   </f:entry>
-  <f:entry title="${%Credentials}" field="gitCredentialsId">
+  <f:entry title="Git credentials" field="gitCredentialsId">
     <c:select/>
-  </f:entry>
-  <f:entry title="Git username" field="gitUsername">
-    <f:textbox />
-  </f:entry>
-  <f:entry title="Git password" field="gitPassword">
-    <f:password />
   </f:entry>
   <f:entry title="Git committer name" field="gitCommitterName">
     <f:textbox />
@@ -50,14 +44,8 @@
   <f:entry title="Jira URL" field="jiraUrl">
     <f:textbox />
   </f:entry>
-  <f:entry title="${%Credentials}" field="jiraCredentialsId">
+  <f:entry title="Jira credentials" field="jiraCredentialsId">
     <c:select/>
-  </f:entry>
-  <f:entry title="Jira username" field="jiraUsername">
-    <f:textbox />
-  </f:entry>
-  <f:entry title="Jira password" field="jiraPassword">
-    <f:password />
   </f:entry>
   <f:entry title="Jira issue pattern" field="jiraIssuePattern">
     <f:textbox />

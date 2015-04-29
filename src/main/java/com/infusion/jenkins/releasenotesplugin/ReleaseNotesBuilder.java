@@ -11,9 +11,12 @@ import hudson.tasks.Builder;
 import hudson.util.FormValidation;
 import hudson.util.ListBoxModel;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
+import java.io.UnsupportedEncodingException;
 import java.lang.reflect.Field;
+import java.nio.file.Files;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -21,8 +24,12 @@ import java.util.logging.Handler;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
+import javax.mail.MessagingException;
+import javax.mail.Transport;
+import javax.mail.internet.MimeMessage;
 import javax.servlet.ServletException;
 
+import jenkins.plugins.mailer.tasks.MimeMessageBuilder;
 import net.sf.json.JSONObject;
 
 import org.kohsuke.stapler.AncestorInPath;
@@ -84,6 +91,7 @@ public class ReleaseNotesBuilder extends Builder {
     private final String issueSortPriority;
     private final String reportDirectory;
     private final String reportTemplate;
+    private final String mailRecipients;
 
     // Fields in config.jelly must match the parameter names in the "DataBoundConstructor"
     @DataBoundConstructor
@@ -93,7 +101,7 @@ public class ReleaseNotesBuilder extends Builder {
             final boolean pushReleaseNotes, final String jiraUrl, final String jiraCredentialsId,
             final String jiraIssuePattern, final String issueFilterByComponent, final String issueFilterByType,
             final String issueFilterByLabel, final String issueFilterByStatus, final String issueSortType,
-            final String issueSortPriority, final String reportDirectory, final String reportTemplate) {
+            final String issueSortPriority, final String reportDirectory, final String reportTemplate, final String mailRecipients) {
         super();
         this.tag1 = tag1;
         this.tag2 = tag2;
@@ -116,6 +124,7 @@ public class ReleaseNotesBuilder extends Builder {
         this.issueSortPriority = issueSortPriority;
         this.reportDirectory = reportDirectory;
         this.reportTemplate = reportTemplate;
+        this.mailRecipients = mailRecipients;
     }
 
     /**
@@ -205,6 +214,10 @@ public class ReleaseNotesBuilder extends Builder {
         return reportTemplate;
     }
 
+    public String getMailRecipients() {
+        return mailRecipients;
+    }
+
     @Override
     public boolean perform(final AbstractBuild build, final Launcher launcher, final BuildListener listener) {
         // This is where you 'build' the project.
@@ -227,7 +240,7 @@ public class ReleaseNotesBuilder extends Builder {
             jenkinsBuildLog.println("Founded git credentials " + gitUsernamePassword.getDescription());
             jenkinsBuildLog.println("Founded jira credentials " + jiraUsernamePassword.getDescription());
 
-            new MainInvoker()
+            File report = new MainInvoker()
                     .tagStart(tag1)
                     .tagEnd(tag2)
                     .pushReleaseNotes(pushReleaseNotes)
@@ -252,11 +265,33 @@ public class ReleaseNotesBuilder extends Builder {
                     .reportDirectory(reportDirectory)
                     .reportTemplate(reportTemplate)
                     .invoke();
+
+            sendMailWithReleaseNotes(build, listener, report);
         } catch (Exception e) {
             e.printStackTrace(jenkinsBuildLog);
             return false;
         }
         return true;
+    }
+
+    private void sendMailWithReleaseNotes(final AbstractBuild build, final BuildListener listener, final File report)
+            throws MessagingException, UnsupportedEncodingException, IOException {
+        if(isNotEmpty(mailRecipients)) {
+            listener.getLogger().println("Sending mail with release notes to: " + mailRecipients);
+
+            String mailContent = new String(Files.readAllBytes(report.toPath()));
+            MimeMessage msg = new MimeMessageBuilder()
+                    .setListener(listener)
+                    .setBody(mailContent)
+                    .setMimeType("text/html")
+                    .setSubject("Release notes generated")
+                    .addRecipients(mailRecipients)
+                    .buildMimeMessage();
+
+            msg.addHeader("X-Jenkins-Job", build.getParent().getFullName());
+
+            Transport.send(msg);
+        }
     }
 
     private static boolean isNotEmpty(final String text) {
@@ -269,6 +304,7 @@ public class ReleaseNotesBuilder extends Builder {
             jenkinsBuildLog.println("[WARN] Couldn't find jdk logger, probably jenkins is using new logging system. Logging won't be visible in console.");
             return;
         }
+
         logger.addHandler(new Handler() {
 
             DateFormat dateFormat = new SimpleDateFormat("HH:mm:ss.SSS");
